@@ -142,3 +142,76 @@ jobs:
       with:
         name: checkov-iac-report
         path: reports/checkov/checkov-iac-report.json
+
+  summarize_and_comment:
+    runs-on: ubuntu-latest
+    needs:
+      - trufflehog_secret_scan
+      - semgrep_sast_scan
+      - dependency_check_sca_scan
+      - trivy_image_scan
+      - checkov_iac_scan
+    if: github.event_name == 'pull_request'
+    permissions:
+      pull-requests: write
+
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Download all reports
+      uses: actions/download-artifact@v4
+      with:
+        path: reports
+
+    - name: Parse report summary
+      id: summary
+      run: |
+        echo "🔐 **DevSecOps Scan Summary**" > summary.md
+
+        # Count TruffleHog secrets
+        if [ -f reports/trufflehog-secrets-report/trufflehog-secrets-report.json ]; then
+          TRUFFLE_COUNT=$(jq length reports/trufflehog-secrets-report/trufflehog-secrets-report.json)
+        else
+          TRUFFLE_COUNT=0
+        fi
+        echo "- Secrets found: **$TRUFFLE_COUNT**" >> summary.md
+
+        # Note Semgrep scan
+        if [ -f reports/semgrep-sast-report/semgrep-sast-report.json ]; then
+          SEMGREP_FINDINGS=$(jq '.results | length' reports/semgrep-sast-report/semgrep-sast-report.json)
+          echo "- SAST (Semgrep): **$SEMGREP_FINDINGS findings**" >> summary.md
+        else
+          echo "- SAST (Semgrep): ❌ Scan failed or no findings" >> summary.md
+        fi
+
+        # Dependency Check
+        if [ -f reports/dependency-check-sca-report/dependency-check-report.json ]; then
+          DEP_COUNT=$(jq '.dependencies[]?.vulnerabilities? // [] | length' reports/dependency-check-sca-report/dependency-check-report.json | awk '{s+=$1} END {print s}')
+          echo "- SCA (Dependency Check): **$DEP_COUNT vulnerabilities**" >> summary.md
+        else
+          echo "- SCA (Dependency Check): ❌ Scan failed or no findings" >> summary.md
+        fi
+
+        # Trivy
+        if [ -f reports/trivy-scan-report/trivy-image-report.json ]; then
+          TRIVY_COUNT=$(jq '[.Results[].Vulnerabilities?] | flatten | length' reports/trivy-scan-report/trivy-image-report.json)
+          echo "- Container Scan (Trivy): **$TRIVY_COUNT vulnerabilities**" >> summary.md
+        else
+          echo "- Container Scan (Trivy): ❌ Scan failed or no findings" >> summary.md
+        fi
+
+        # Checkov
+        if [ -f reports/checkov-iac-report/checkov-iac-report.json ]; then
+          CKV_COUNT=$(jq '[.results.failed_checks[]] | length' reports/checkov-iac-report/checkov-iac-report.json)
+          echo "- IaC (Checkov): **$CKV_COUNT failed checks**" >> summary.md
+        else
+          echo "- IaC (Checkov): ❌ Scan failed or no findings" >> summary.md
+        fi
+
+    - name: Post PR Comment with Summary
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        path: summary.md
+
+  
