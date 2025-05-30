@@ -1,49 +1,52 @@
 name: DevSecOps
-on: workflow_dispatch
 
-env:
-  DOCKER_IMAGE: 'webgoat/webgoat-8.0'
+on:
+  pull_request:
+    branches:
+      - release
+  workflow_dispatch:
 
 jobs:
-
   trufflehog_secret_scan:
     runs-on: ubuntu-latest
+    name: Secret Scan - TruffleHog
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Set up Docker
+    - name: Run TruffleHog and format JSON output
       run: |
-        docker pull trufflesecurity/trufflehog:v3.88.34
-        docker pull ghcr.io/jqlang/jq:1.7.1
+        mkdir -p reports/trufflehog
+        docker run --rm -v "${{ github.workspace }}:/home" trufflesecurity/trufflehog filesystem --json /home > raw-trufflehog.json
+        cat raw-trufflehog.json | docker run --rm -i ghcr.io/jqlang/jq:1.7.1 -s . > reports/trufflehog/trufflehog-secrets-report.json
 
-    - name: TruffleHog Scan
+    - name: Count total secrets found
+      id: count
       run: |
-        {
-            echo "["
-            first=true
-            docker run --rm -v $(pwd):/home trufflesecurity/trufflehog:v3.88.34 filesystem --json /home | while read -r line; do
-                if [ "$first" != true ]; then
-                    echo ","
-                fi
+        COUNT=$(jq 'length' reports/trufflehog/trufflehog-secrets-report.json)
+        echo "found=$COUNT" >> $GITHUB_OUTPUT
 
-                echo "$line" | docker run --rm ghcr.io/jqlang/jq:1.7.1 .
-
-                first=false
-            done
-            echo "]"
-        } > trufflehog-secrets-report.json
+    - name: Comment on PR with results
+      if: github.event_name == 'pull_request'
+      uses: marocchino/sticky-pull-request-comment@v2
+      with:
+        message: |
+          🔐 **TruffleHog Secret Scan Results**
+          - Secrets found: **${{ steps.count.outputs.found }}**
+          
+          ${{ steps.count.outputs.found == '0' && '✅ No secrets detected!' || '⚠️ Please review the report file `trufflehog-secrets-report.json` for details.' }}
       continue-on-error: true
 
     - name: Upload TruffleHog Report
       uses: actions/upload-artifact@v4
       with:
         name: trufflehog-secrets-report
-        path: trufflehog-secrets-report.json
+        path: reports/trufflehog/trufflehog-secrets-report.json
 
   semgrep_sast_scan:
     runs-on: ubuntu-latest
+    name: SAST Scan - Semgrep
 
     steps:
     - name: Checkout repository
@@ -51,30 +54,33 @@ jobs:
 
     - name: Semgrep Scan
       run: |
-        docker pull semgrep/semgrep:latest
-        docker run --rm -v $(pwd):/src semgrep/semgrep:latest semgrep --config auto --json -o /src/semgrep-sast-report.json
+        mkdir -p reports/semgrep
+        docker run --rm -v "${{ github.workspace }}:/src" semgrep/semgrep:latest semgrep --config auto --json -o /src/reports/semgrep/semgrep-sast-report.json
       continue-on-error: true
 
     - name: Upload Semgrep Report
       uses: actions/upload-artifact@v4
       with:
         name: semgrep-sast-report
-        path: semgrep-sast-report.json
+        path: reports/semgrep/semgrep-sast-report.json
 
   dependency_check_sca_scan:
     runs-on: ubuntu-latest
+    name: SCA Scan - OWASP Dependency Check
 
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
 
-    - name: Create Report Directory
-      run: mkdir -p dependency-check-sca-report
-
     - name: Dependency Check Scan
       run: |
-        docker pull owasp/dependency-check:9.0.0
-        docker run --rm --user=root -v "${{ github.workspace }}:/src" owasp/dependency-check:9.0.0 --scan /src --format JSON --format HTML --out /src/dependency-check-sca-report --prettyPrint
+        mkdir -p reports/dependency-check
+        docker run --rm --user=root -v "${{ github.workspace }}:/src" owasp/dependency-check:9.0.0 \
+          --scan /src \
+          --format JSON \
+          --format HTML \
+          --out /src/reports/dependency-check \
+          --prettyPrint
       continue-on-error: true
 
     - name: Upload Dependency Check Reports
@@ -82,11 +88,12 @@ jobs:
       with:
         name: dependency-check-sca-report
         path: |
-          dependency-check-sca-report/dependency-check-report.json
-          dependency-check-sca-report/dependency-check-report.html
+          reports/dependency-check/dependency-check-report.json
+          reports/dependency-check/dependency-check-report.html
 
   trivy_image_scan:
     runs-on: ubuntu-latest
+    name: Container Scan - Trivy
 
     steps:
     - name: Checkout repository
@@ -94,19 +101,22 @@ jobs:
 
     - name: Image Scan with Trivy
       run: |
-        docker pull ${{ env.DOCKER_IMAGE }}
-        docker pull aquasec/trivy:latest
-        docker run --rm -v /var/run/docker.sock:/var/run/docker.sock -v $(pwd):/home aquasec/trivy:latest image ${{ env.DOCKER_IMAGE }} --format json -o /home/trivy-image-report.json
+        mkdir -p reports/trivy
+        docker run --rm \
+          -v /var/run/docker.sock:/var/run/docker.sock \
+          -v "${{ github.workspace }}:/home" \
+          aquasec/trivy:latest fs /home --format json -o /home/reports/trivy/trivy-image-report.json
       continue-on-error: true
 
     - name: Upload Trivy Scan Report
       uses: actions/upload-artifact@v4
       with:
         name: trivy-scan-report
-        path: trivy-image-report.json
+        path: reports/trivy/trivy-image-report.json
 
   checkov_iac_scan:
     runs-on: ubuntu-latest
+    name: IaC Scan - Checkov
 
     steps:
     - name: Checkout repository
@@ -114,12 +124,19 @@ jobs:
 
     - name: Checkov Scan
       run: |
-        docker pull bridgecrew/checkov:3.2.401
-        docker run --volume ${{ github.workspace }}:/tf --workdir /tf bridgecrew/checkov:3.2.401 --directory /tf -o cli -o json --output-file-path console,checkov-iac-report.json --skip-resources-without-violations --quiet --compact
+        mkdir -p reports/checkov
+        docker run --rm \
+          -v "${{ github.workspace }}:/tf" \
+          --workdir /tf \
+          bridgecrew/checkov:3.2.401 \
+          --directory /tf \
+          -o cli -o json \
+          --output-file-path console,reports/checkov/checkov-iac-report.json \
+          --skip-resources-without-violations --quiet --compact
       continue-on-error: true
 
     - name: Upload Checkov Report
       uses: actions/upload-artifact@v4
       with:
         name: checkov-iac-report
-        path: checkov-iac-report.json
+        path: reports/checkov/checkov-iac-report.json
