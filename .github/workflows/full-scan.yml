@@ -5,7 +5,9 @@ on:
     branches:
       - release
   workflow_dispatch:
-
+permissions:
+  pull-requests: write
+  contents: read
 jobs:
   trufflehog_secret_scan:
     runs-on: ubuntu-latest
