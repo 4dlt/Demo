@@ -2,8 +2,6 @@ name: DevSecOps
 
 on:
   pull_request:
-    branches:
-      - release
   workflow_dispatch:
 permissions:
   pull-requests: write
