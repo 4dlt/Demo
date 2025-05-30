@@ -201,11 +201,12 @@ jobs:
 
         # Checkov
         if [ -f reports/checkov-iac-report/checkov-iac-report.json ]; then
-          CKV_COUNT=$(jq '[.results.failed_checks[]] | length' reports/checkov-iac-report/checkov-iac-report.json)
+          CKV_COUNT=$(jq '[.[] | .results?.failed_checks? // []] | flatten | length' reports/checkov-iac-report/checkov-iac-report.json)
           echo "- IaC (Checkov): **$CKV_COUNT failed checks**" >> summary.md
         else
           echo "- IaC (Checkov): ❌ Scan failed or no findings" >> summary.md
         fi
+
 
     - name: Post PR Comment with Summary
       uses: marocchino/sticky-pull-request-comment@v2
